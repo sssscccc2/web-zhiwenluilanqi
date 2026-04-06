@@ -206,13 +206,16 @@ async function launchBrowser(profileId) {
   setupChromePreferences(userDataDir, fp);
   setupBookmarks(userDataDir);
 
-  // Start Xvfb with color depth matching real displays
+  // Start Xvfb: -ac allows all clients (chrome-user needs access)
   const xvfb = spawn('Xvfb', [display, '-screen', '0', `${screenW}x${screenH}x24`, '-ac', '-nolisten', 'tcp'], {
     stdio: 'ignore',
     detached: true,
   });
   xvfb.unref();
   await sleep(1500);
+
+  // Allow chrome-user to access the X display
+  try { execSync(`xhost +SI:localuser:chrome-user 2>/dev/null || true`, { env: { ...process.env, DISPLAY: display }, timeout: 2000 }); } catch (e) {}
 
   // Start fluxbox window manager
   const fluxbox = spawn('fluxbox', [], {
@@ -252,7 +255,8 @@ async function launchBrowser(profileId) {
   const gpu = fp.webgl?.vendor ? fp.webgl : gpuList[Math.floor(Math.random() * gpuList.length)];
 
   const chromeArgs = [
-    '--no-sandbox',
+    // NO --no-sandbox: Chrome runs as non-root user 'chrome-user' with real sandbox
+    // This eliminates the "unsupported command-line flag" warning bar
     '--disable-blink-features=AutomationControlled',
     `--fingerprint=${fpSeed}`,
     `--fingerprint-platform=${osPlatform}`,
@@ -262,7 +266,6 @@ async function launchBrowser(profileId) {
 
     '--no-first-run',
     '--no-default-browser-check',
-    '--disable-infobars',
     '--disable-sync',
     '--disable-translate',
     '--disable-features=TranslateUI',
@@ -273,9 +276,7 @@ async function launchBrowser(profileId) {
     `--fingerprint-timezone=${fp.timezone || 'America/New_York'}`,
     `--fingerprint-locale=${fp.languages?.[0] || 'en-US'}`,
 
-    // Look like a real user's Chrome — keep these ON
     '--enable-features=PasswordImport',
-    // Disable obvious automation artifacts
     '--disable-hang-monitor',
     '--disable-prompt-on-repost',
     '--disable-ipc-flooding-protection',
@@ -302,15 +303,24 @@ async function launchBrowser(profileId) {
 
   chromeArgs.push('https://www.google.com');
 
-  console.log(`[Browser] Launching CloakBrowser on ${display} | OS: ${osPlatform} | GPU: ${gpu.renderer.substring(0, 40)}...`);
-  console.log(`[Browser] Binary: ${cloakBinary}`);
+  // Ensure user data dir is writable by chrome-user
+  try {
+    execSync(`chown -R chrome-user:chrome-user "${userDataDir}"`, { timeout: 3000 });
+  } catch (e) {}
 
-  const chromeProc = spawn(cloakBinary, chromeArgs, {
+  console.log(`[Browser] Launching CloakBrowser on ${display} | OS: ${osPlatform} | GPU: ${gpu.renderer.substring(0, 40)}...`);
+  console.log(`[Browser] Binary: ${cloakBinary} (as chrome-user, real sandbox)`);
+
+  // Run as non-root 'chrome-user' so Chrome can use real sandbox (no --no-sandbox needed)
+  // This eliminates the warning bar and makes the environment more realistic
+  const chromeProc = spawn('su', ['-s', '/bin/bash', 'chrome-user', '-c',
+    `"${cloakBinary}" ${chromeArgs.map(a => `'${a}'`).join(' ')}`
+  ], {
     env: {
       ...process.env,
       DISPLAY: display,
       TZ: fp.timezone || 'America/New_York',
-      // Ensure fontconfig picks up Windows fonts
+      HOME: '/home/chrome-user',
       FONTCONFIG_PATH: '/etc/fonts',
     },
     stdio: 'ignore',
