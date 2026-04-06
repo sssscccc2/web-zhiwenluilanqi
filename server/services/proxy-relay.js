@@ -1,29 +1,22 @@
 const net = require('net');
 const { SocksClient } = require('socks');
-const dnsResolver = require('./dns-resolver');
 
 const activeRelays = new Map();
 let nextPort = 21080;
 
 /**
  * Create a local SOCKS5 relay that forwards through an authenticated upstream proxy.
- * When localDns is configured, hostnames are resolved through the SOCKS tunnel
- * to the target country's DNS servers, then the IP is sent to the upstream proxy.
- * This makes DNS leak tests show the target country's DNS instead of the proxy's default DNS.
- *
- * Options:
- *   localDns: { servers: ['ip1','ip2'], socksProxy: {host,port,user,pass} }
+ * Browser connects to localhost:localPort (no auth) → relay → upstream SOCKS5 (with auth)
  */
-function createRelay(upstream, options = {}) {
-  const dnsKey = options.localDns ? `:dns=${options.localDns.servers[0]}` : '';
-  const key = `${upstream.type}:${upstream.host}:${upstream.port}:${upstream.user}${dnsKey}`;
+function createRelay(upstream) {
+  const key = `${upstream.type}:${upstream.host}:${upstream.port}:${upstream.user}`;
   if (activeRelays.has(key)) {
     return activeRelays.get(key);
   }
 
   const localPort = nextPort++;
   const server = net.createServer((clientSocket) => {
-    handleSocks5Client(clientSocket, upstream, options.localDns || null);
+    handleSocks5Client(clientSocket, upstream);
   });
 
   server.listen(localPort, '127.0.0.1', () => {});
@@ -37,19 +30,23 @@ function createRelay(upstream, options = {}) {
   return info;
 }
 
-function handleSocks5Client(client, upstream, localDns) {
+function handleSocks5Client(client, upstream) {
   let state = 'greeting';
+  let targetHost = '';
+  let targetPort = 0;
 
   client.on('error', () => client.destroy());
 
   client.on('data', async (data) => {
     if (state === 'greeting') {
+      // SOCKS5 greeting: respond with no-auth
       client.write(Buffer.from([0x05, 0x00]));
       state = 'request';
       return;
     }
 
     if (state === 'request') {
+      // Parse SOCKS5 connect request
       if (data[0] !== 0x05 || data[1] !== 0x01) {
         client.destroy();
         return;
@@ -59,13 +56,16 @@ function handleSocks5Client(client, upstream, localDns) {
       let host, port;
 
       if (addrType === 0x01) {
+        // IPv4
         host = `${data[4]}.${data[5]}.${data[6]}.${data[7]}`;
         port = data.readUInt16BE(8);
       } else if (addrType === 0x03) {
+        // Domain
         const domainLen = data[4];
         host = data.slice(5, 5 + domainLen).toString();
         port = data.readUInt16BE(5 + domainLen);
       } else if (addrType === 0x04) {
+        // IPv6
         const parts = [];
         for (let i = 0; i < 16; i += 2) {
           parts.push(data.readUInt16BE(4 + i).toString(16));
@@ -77,39 +77,11 @@ function handleSocks5Client(client, upstream, localDns) {
         return;
       }
 
+      targetHost = host;
+      targetPort = port;
       state = 'connecting';
 
       try {
-        let connectHost = host;
-
-        // If localDns is configured and the host is a domain (not IP),
-        // resolve it through the SOCKS tunnel to the target country's DNS
-        if (localDns && addrType === 0x03) {
-          const cached = dnsResolver.getCachedDns(host);
-          if (cached) {
-            connectHost = cached;
-          } else {
-            const dnsServers = localDns.servers;
-            const socksProxy = localDns.socksProxy;
-            let resolved = null;
-
-            for (const dnsServer of dnsServers) {
-              try {
-                resolved = await dnsResolver.resolveThroughSocks(host, socksProxy, dnsServer, 6000);
-                if (resolved) break;
-              } catch (e) {
-                // try next DNS server
-              }
-            }
-
-            if (resolved) {
-              dnsResolver.setCachedDns(host, resolved);
-              connectHost = resolved;
-            }
-            // If DNS resolution failed, fall back to sending hostname (proxy will resolve)
-          }
-        }
-
         const proxyType = upstream.type === 'socks4' ? 4 : 5;
         const socksOptions = {
           proxy: {
@@ -118,7 +90,7 @@ function handleSocks5Client(client, upstream, localDns) {
             type: proxyType,
           },
           command: 'connect',
-          destination: { host: connectHost, port },
+          destination: { host: targetHost, port: targetPort },
           timeout: 15000,
         };
 
@@ -129,13 +101,16 @@ function handleSocks5Client(client, upstream, localDns) {
 
         const { socket: upstreamSocket } = await SocksClient.createConnection(socksOptions);
 
+        // Send success response to client
         const response = Buffer.alloc(10);
-        response[0] = 0x05;
-        response[1] = 0x00;
-        response[2] = 0x00;
-        response[3] = 0x01;
+        response[0] = 0x05; // version
+        response[1] = 0x00; // success
+        response[2] = 0x00; // reserved
+        response[3] = 0x01; // IPv4
+        // bound addr 0.0.0.0:0
         client.write(response);
 
+        // Pipe bidirectionally
         client.pipe(upstreamSocket);
         upstreamSocket.pipe(client);
 
@@ -145,9 +120,10 @@ function handleSocks5Client(client, upstream, localDns) {
         upstreamSocket.on('close', () => client.destroy());
 
       } catch (err) {
+        // Connection failed response
         const response = Buffer.alloc(10);
         response[0] = 0x05;
-        response[1] = 0x05;
+        response[1] = 0x05; // connection refused
         client.write(response);
         client.destroy();
       }
@@ -155,6 +131,9 @@ function handleSocks5Client(client, upstream, localDns) {
   });
 }
 
+/**
+ * For HTTP/HTTPS proxies with auth, create a local HTTP CONNECT proxy
+ */
 function createHttpRelay(upstream) {
   const key = `http:${upstream.host}:${upstream.port}:${upstream.user}`;
   if (activeRelays.has(key)) {
@@ -226,11 +205,10 @@ function destroyAllRelays() {
 
 /**
  * Get or create a relay for the given proxy config.
- * Options:
- *   localDns: { servers: ['ip'], socksProxy: {host,port,user,pass} }
+ * Returns { localPort } - browser should connect to socks5://127.0.0.1:localPort
  */
-function getRelay(proxyType, proxyHost, proxyPort, proxyUser, proxyPass, options = {}) {
-  if (!proxyUser) return null;
+function getRelay(proxyType, proxyHost, proxyPort, proxyUser, proxyPass) {
+  if (!proxyUser) return null; // No auth needed, direct connection is fine
 
   const upstream = {
     type: proxyType,
@@ -243,7 +221,7 @@ function getRelay(proxyType, proxyHost, proxyPort, proxyUser, proxyPass, options
   if (proxyType === 'http' || proxyType === 'https') {
     return createHttpRelay(upstream);
   }
-  return createRelay(upstream, options);
+  return createRelay(upstream);
 }
 
 module.exports = { getRelay, destroyRelay, destroyAllRelays };
