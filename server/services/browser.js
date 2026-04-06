@@ -55,7 +55,19 @@ function setupChromePreferences(userDataDir, fp) {
   }
 
   const prefsPath = path.join(defaultDir, 'Preferences');
-  if (fs.existsSync(prefsPath)) return;
+
+  // Always fix exit_type to prevent "Restore pages?" dialog
+  if (fs.existsSync(prefsPath)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+      let changed = false;
+      if (!existing.profile) existing.profile = {};
+      if (existing.profile.exit_type !== 'Normal') { existing.profile.exit_type = 'Normal'; changed = true; }
+      if (existing.profile.exited_cleanly !== true) { existing.profile.exited_cleanly = true; changed = true; }
+      if (changed) fs.writeFileSync(prefsPath, JSON.stringify(existing, null, 2));
+    } catch (e) {}
+    return;
+  }
 
   const lang = fp.languages?.[0] || 'en-US';
   const langBase = lang.split('-')[0];
@@ -97,14 +109,20 @@ function setupChromePreferences(userDataDir, fp) {
       directory_upgrade: true,
     },
     safebrowsing: {
-      enabled: false,
+      enabled: true,
+      enhanced: false,
     },
     autofill: {
-      profile_enabled: false,
+      profile_enabled: true,
+      credit_card_enabled: true,
     },
-    credentials_enable_service: false,
+    credentials_enable_service: true,
     signin: {
-      allowed: false,
+      allowed: true,
+      allowed_on_next_startup: true,
+    },
+    payments: {
+      can_make_payment_enabled: true,
     },
     distribution: {
       import_bookmarks: false,
@@ -255,8 +273,8 @@ async function launchBrowser(profileId) {
   const gpu = fp.webgl?.vendor ? fp.webgl : gpuList[Math.floor(Math.random() * gpuList.length)];
 
   const chromeArgs = [
-    // NO --no-sandbox: Chrome runs as non-root user 'chrome-user' with real sandbox
-    // This eliminates the "unsupported command-line flag" warning bar
+    // --test-type suppresses ALL "unsupported command-line flag" warning bars
+    '--test-type',
     '--disable-blink-features=AutomationControlled',
     `--fingerprint=${fpSeed}`,
     `--fingerprint-platform=${osPlatform}`,
@@ -266,7 +284,6 @@ async function launchBrowser(profileId) {
 
     '--no-first-run',
     '--no-default-browser-check',
-    '--disable-sync',
     '--disable-translate',
     '--disable-features=TranslateUI',
     `--window-size=${screenW},${screenH}`,
@@ -276,7 +293,6 @@ async function launchBrowser(profileId) {
     `--fingerprint-timezone=${fp.timezone || 'America/New_York'}`,
     `--fingerprint-locale=${fp.languages?.[0] || 'en-US'}`,
 
-    '--enable-features=PasswordImport',
     '--disable-hang-monitor',
     '--disable-prompt-on-repost',
     '--disable-ipc-flooding-protection',
