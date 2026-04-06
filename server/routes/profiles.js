@@ -67,10 +67,11 @@ router.post('/generate-fingerprint', (req, res) => {
 
 router.post('/resolve-proxy', async (req, res) => {
   try {
-    const { host, port, user, pass, type } = req.body;
+    const { host, port, user, pass, type, os } = req.body;
     if (!host) return res.status(400).json({ success: false, error: 'host is required' });
     const geo = await resolveProxyGeo(host, port, user, pass, type || 'socks5');
     const fp = generateFingerprint({
+      os: os || 'windows',
       timezone: geo.timezone,
       languages: geo.languages,
     });

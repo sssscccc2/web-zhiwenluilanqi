@@ -23,7 +23,13 @@ function getCountryFromTimezone(tz) {
   return '';
 }
 
-function getOSIcon(platform) {
+function getOSIcon(fp) {
+  if (fp && fp.os) {
+    if (fp.os === 'windows') return '🪟';
+    if (fp.os === 'macos') return '🍎';
+    if (fp.os === 'linux') return '🐧';
+  }
+  const platform = fp?.platform;
   if (!platform) return '💻';
   if (platform.includes('Win')) return '🪟';
   if (platform.includes('Mac') || platform.includes('iPhone')) return '🍎';
@@ -282,7 +288,7 @@ export default function ProfileList({ onLaunch, onEdit, onNew }) {
                     <td className="col-time">{formatDate(profile.created_at)}</td>
                     <td className="col-os">
                       <span className="os-icon" title={profile.fingerprint?.platform}>
-                        {getOSIcon(profile.fingerprint?.platform)}
+                        {getOSIcon(profile.fingerprint)}
                       </span>
                     </td>
                     <td className="col-actions">

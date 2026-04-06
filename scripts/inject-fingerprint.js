@@ -171,25 +171,86 @@
     }
   }
 
-  // --- WebRTC protection ---
-  if (config.webrtc && config.webrtc.mode === 'fake') {
-    const origRTC = window.RTCPeerConnection;
-    window.RTCPeerConnection = function (...args) {
-      if (args[0] && args[0].iceServers) {
-        args[0].iceServers = [];
-      }
-      const pc = new origRTC(...args);
-      const origCreateOffer = pc.createOffer.bind(pc);
-      pc.createOffer = function (options) {
-        return origCreateOffer(options).then(offer => {
-          offer.sdp = offer.sdp.replace(/a=candidate:.*typ srflx.*/g, '');
-          offer.sdp = offer.sdp.replace(/a=candidate:.*typ relay.*/g, '');
-          return offer;
-        });
-      };
-      return pc;
+  // --- ClientRects noise ---
+  if (config.clientRects !== 'off') {
+    const crSeed = config.canvas?.noise ? parseInt(config.canvas.noise.slice(0, 8), 16) : Math.random() * 1e9;
+    let crCounter = 0;
+    function crNoise() {
+      crCounter++;
+      const x = Math.sin(crSeed + crCounter) * 10000;
+      return (x - Math.floor(x)) * 0.001 - 0.0005;
+    }
+
+    function noiseDOMRect(rect) {
+      const n = crNoise;
+      return new DOMRect(
+        rect.x + n(), rect.y + n(),
+        rect.width + n(), rect.height + n()
+      );
+    }
+
+    const origGetBCR = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () {
+      return noiseDOMRect(origGetBCR.call(this));
     };
-    window.RTCPeerConnection.prototype = origRTC.prototype;
+
+    const origGetCR = Element.prototype.getClientRects;
+    Element.prototype.getClientRects = function () {
+      const rects = origGetCR.call(this);
+      const result = [];
+      for (let i = 0; i < rects.length; i++) {
+        result.push(noiseDOMRect(rects[i]));
+      }
+      result.item = (idx) => result[idx];
+      Object.defineProperty(result, 'length', { value: rects.length });
+      return result;
+    };
+  }
+
+  // --- WebRTC protection ---
+  if (config.webrtc && config.webrtc.mode !== 'real') {
+    const origRTC = window.RTCPeerConnection;
+
+    if (config.webrtc.mode === 'disabled') {
+      window.RTCPeerConnection = function () {
+        throw new DOMException('RTCPeerConnection is disabled', 'NotSupportedError');
+      };
+      window.RTCPeerConnection.prototype = origRTC.prototype;
+    } else if (config.webrtc.mode === 'replace' && config.webrtc.publicIp) {
+      const replaceIp = config.webrtc.publicIp;
+      window.RTCPeerConnection = function (...args) {
+        const pc = new origRTC(...args);
+        const origCreateOffer = pc.createOffer.bind(pc);
+        pc.createOffer = function (options) {
+          return origCreateOffer(options).then(offer => {
+            offer.sdp = offer.sdp.replace(
+              /a=candidate:(\S+ \d+ \S+ \d+) (\d+\.\d+\.\d+\.\d+)/g,
+              (m, prefix, ip) => `a=candidate:${prefix} ${replaceIp}`
+            );
+            return offer;
+          });
+        };
+        return pc;
+      };
+      window.RTCPeerConnection.prototype = origRTC.prototype;
+    } else {
+      window.RTCPeerConnection = function (...args) {
+        if (args[0] && args[0].iceServers) {
+          args[0].iceServers = [];
+        }
+        const pc = new origRTC(...args);
+        const origCreateOffer = pc.createOffer.bind(pc);
+        pc.createOffer = function (options) {
+          return origCreateOffer(options).then(offer => {
+            offer.sdp = offer.sdp.replace(/a=candidate:.*typ srflx.*/g, '');
+            offer.sdp = offer.sdp.replace(/a=candidate:.*typ relay.*/g, '');
+            return offer;
+          });
+        };
+        return pc;
+      };
+      window.RTCPeerConnection.prototype = origRTC.prototype;
+    }
 
     if (window.webkitRTCPeerConnection) {
       window.webkitRTCPeerConnection = window.RTCPeerConnection;
@@ -300,6 +361,31 @@
     try { delete window[prop]; } catch (e) {}
   }
 
+  // --- Device info spoofing (deviceName, localIP, macAddress) ---
+  if (config.deviceName) {
+    Object.defineProperty(Navigator.prototype, 'deviceName', {
+      get: () => config.deviceName,
+      configurable: true,
+    });
+  }
+  if (config.localIP || config.macAddress) {
+    const origRTCGetStats = window.RTCPeerConnection?.prototype?.getStats;
+    if (origRTCGetStats) {
+      const origProto = window.RTCPeerConnection.prototype;
+      origProto.getStats = function () {
+        return origRTCGetStats.call(this).then(stats => {
+          stats.forEach(report => {
+            if (report.type === 'local-candidate' && config.localIP) {
+              report.address = config.localIP;
+              report.ip = config.localIP;
+            }
+          });
+          return stats;
+        });
+      };
+    }
+  }
+
   // Chrome runtime mock
   if (!window.chrome) window.chrome = {};
   if (!window.chrome.runtime) {
@@ -308,6 +394,45 @@
       sendMessage: () => {},
       id: undefined,
     };
+  }
+
+  // --- navigator.userAgentData spoofing ---
+  if (config.userAgent) {
+    const chromeMatch = config.userAgent.match(/Chrome\/(\d+)/);
+    const chromeVersion = chromeMatch ? chromeMatch[1] : '131';
+    const fullVersion = config.userAgent.match(/Chrome\/([\d.]+)/)?.[1] || `${chromeVersion}.0.0.0`;
+    const platformMap = { Win32: 'Windows', MacIntel: 'macOS', 'Linux x86_64': 'Linux' };
+    const uadPlatform = platformMap[config.platform] || 'Windows';
+
+    const brands = [
+      { brand: 'Google Chrome', version: chromeVersion },
+      { brand: 'Chromium', version: chromeVersion },
+      { brand: 'Not_A Brand', version: '24' },
+    ];
+
+    const uaData = {
+      brands: Object.freeze(brands),
+      mobile: false,
+      platform: uadPlatform,
+      getHighEntropyValues: (hints) => Promise.resolve({
+        brands,
+        mobile: false,
+        platform: uadPlatform,
+        platformVersion: uadPlatform === 'Windows' ? '15.0.0' : uadPlatform === 'macOS' ? '10.15.7' : '6.5.0',
+        architecture: 'x86',
+        bitness: '64',
+        model: '',
+        uaFullVersion: fullVersion,
+        fullVersionList: brands.map(b => ({ brand: b.brand, version: fullVersion })),
+      }),
+    };
+
+    try {
+      Object.defineProperty(Navigator.prototype, 'userAgentData', {
+        get: () => uaData,
+        configurable: true,
+      });
+    } catch (e) {}
   }
 
   // Permission query override for notifications

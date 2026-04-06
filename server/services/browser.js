@@ -1,3 +1,13 @@
+let cloakBinaryPath = null;
+const cloakReady = import('cloakbrowser')
+  .then(async (m) => {
+    await m.ensureBinary();
+    const info = m.binaryInfo();
+    cloakBinaryPath = info.binaryPath;
+    console.log(`[Browser] CloakBrowser v${info.version} binary: ${cloakBinaryPath}`);
+  })
+  .catch((e) => { console.log('[Browser] CloakBrowser not available:', e.message); });
+
 const { chromium } = require('playwright');
 const { execSync, spawn } = require('child_process');
 const path = require('path');
@@ -20,6 +30,8 @@ function getNextDisplay() {
 }
 
 async function launchBrowser(profileId) {
+  await cloakReady;
+
   if (activeBrowsers.has(profileId)) {
     return activeBrowsers.get(profileId);
   }
@@ -33,8 +45,8 @@ async function launchBrowser(profileId) {
   const vncPort = VNC_PORT_BASE + displayNum;
   const wsPort = WEBSOCKIFY_PORT_BASE + displayNum;
 
-  const screenW = fp.screen?.width || 1920;
-  const screenH = fp.screen?.height || 1080;
+  const screenW = fp.screen?.width || 1280;
+  const screenH = fp.screen?.height || 720;
 
   const userDataDir = path.join(USER_DATA_BASE, profileId);
   if (!fs.existsSync(userDataDir)) {
@@ -47,7 +59,7 @@ async function launchBrowser(profileId) {
     detached: true,
   });
   xvfb.unref();
-  await sleep(500);
+  await sleep(1500);
 
   // Start fluxbox window manager
   const fluxbox = spawn('fluxbox', [], {
@@ -78,97 +90,66 @@ async function launchBrowser(profileId) {
     }
   }
 
-  // Build Chromium launch args
-  const args = [
+  // === STANDALONE MODE (like BitBrowser): No Playwright, no CDP ===
+  // Launch CloakBrowser as an independent process, zero automation leaks
+  const cloakBinary = cloakBinaryPath || '/usr/bin/google-chrome-stable';
+  const fpSeed = Math.floor(Math.random() * 99999);
+
+  const chromeArgs = [
+    // CloakBrowser C++ stealth flags
+    '--no-sandbox',
+    '--disable-blink-features=AutomationControlled',
+    `--fingerprint=${fpSeed}`,
+    '--fingerprint-platform=windows',
+    `--fingerprint-gpu-vendor=${fp.webgl?.vendor || 'Google Inc. (NVIDIA)'}`,
+    `--fingerprint-gpu-renderer=${fp.webgl?.renderer || 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 (0x00002484) Direct3D11 vs_5_0 ps_5_0, D3D11)'}`,
+    '--ignore-gpu-blocklist',
+
+    // Normal browser flags (same as BitBrowser)
     '--no-first-run',
     '--no-default-browser-check',
-    '--disable-blink-features=AutomationControlled',
-    '--disable-features=IsolateOrigins,site-per-process',
-    '--disable-web-security=false',
+    '--disable-infobars',
+    '--disable-sync',
     `--window-size=${screenW},${screenH}`,
     '--start-maximized',
     `--lang=${fp.languages?.[0] || 'en-US'}`,
-    `--timezone=${fp.timezone || 'America/New_York'}`,
+    `--user-data-dir=${userDataDir}`,
+    `--fingerprint-timezone=${fp.timezone || 'America/New_York'}`,
+    `--fingerprint-locale=${fp.languages?.[0] || 'en-US'}`,
   ];
 
-  if (fp.webrtc?.mode === 'fake') {
-    args.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
-    args.push('--enforce-webrtc-ip-permission-check');
-  }
-
-  const launchOptions = {
-    headless: false,
-    args,
-    env: { ...process.env, DISPLAY: display, TZ: fp.timezone || 'America/New_York' },
-    ignoreDefaultArgs: ['--enable-automation'],
-    locale: fp.languages?.[0] || 'en-US',
-    timezoneId: fp.timezone || 'America/New_York',
-  };
-
-  if (fp.geolocation && fp.geolocation.latitude) {
-    launchOptions.geolocation = {
-      latitude: fp.geolocation.latitude,
-      longitude: fp.geolocation.longitude,
-      accuracy: fp.geolocation.accuracy || 50,
-    };
-    launchOptions.permissions = ['geolocation'];
-  }
-
+  // Proxy - clean setup, no host-resolver-rules hack
   if (proxyServer) {
-    launchOptions.proxy = {
-      server: proxyServer,
-    };
-    // Auth is handled by the local relay, no need to pass credentials to Chromium
+    chromeArgs.push(`--proxy-server=${proxyServer}`);
+    chromeArgs.push('--proxy-bypass-list=<-loopback>');
+    chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
+    chromeArgs.push('--enforce-webrtc-ip-permission-check');
   }
 
-  // Launch browser
-  const browser = await chromium.launchPersistentContext(userDataDir, launchOptions);
+  // Start page
+  chromeArgs.push('https://www.google.com');
 
-  // Inject fingerprint script
-  const injectScript = fs.readFileSync(
-    path.join(__dirname, '../../scripts/inject-fingerprint.js'),
-    'utf-8'
-  );
-  const scriptWithConfig = injectScript.replace('__FP_CONFIG__', JSON.stringify(fp));
-  await browser.addInitScript(scriptWithConfig);
+  console.log(`[Browser] Launching standalone CloakBrowser (NO CDP/Playwright) on ${display}`);
+  console.log(`[Browser] Binary: ${cloakBinary}`);
 
-  const redditStealth = fs.readFileSync(
-    path.join(__dirname, '../../scripts/reddit-stealth.js'),
-    'utf-8'
-  );
-  await browser.addInitScript(redditStealth);
-
-  // Set extra HTTP headers for consistent UA
-  const pages = browser.pages();
-  for (const page of pages) {
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': fp.languages?.join(',') || 'en-US,en',
-    });
-  }
-
-  browser.on('page', async (page) => {
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': fp.languages?.join(',') || 'en-US,en',
-    });
+  const chromeProc = spawn(cloakBinary, chromeArgs, {
+    env: { ...process.env, DISPLAY: display, TZ: fp.timezone || 'America/New_York' },
+    stdio: 'ignore',
+    detached: true,
   });
+  chromeProc.unref();
 
-  // Navigate first page to Google (verifies proxy works and gives user a starting point)
-  try {
-    const firstPage = pages[0] || await browser.newPage();
-    await firstPage.goto('https://www.google.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  } catch (err) {
-    console.warn(`[Browser] Failed to load start page: ${err.message}`);
-  }
+  // Wait for Chrome to fully start and render
+  await sleep(3000);
 
   // Maximize the browser window to fill the virtual display
-  await sleep(800);
   try {
-    const wid = execSync(`DISPLAY=${display} xdotool search --onlyvisible --class chromium | head -1`, { timeout: 3000 }).toString().trim();
+    const wid = execSync(`DISPLAY=${display} xdotool search --onlyvisible --name "" | head -1`, { timeout: 5000 }).toString().trim();
     if (wid) {
       execSync(`DISPLAY=${display} xdotool windowactivate ${wid} windowsize ${wid} ${screenW} ${screenH} windowmove ${wid} 0 0`, { timeout: 3000 });
+      console.log('[Browser] Window maximized');
     }
   } catch (e) {
-    // Fallback: try wmctrl or key shortcut
     try { execSync(`DISPLAY=${display} xdotool key --clearmodifiers super+Up`, { timeout: 2000 }); } catch (e2) {}
   }
 
@@ -182,6 +163,9 @@ async function launchBrowser(profileId) {
     '-forever',
     '-noxdamage',
     '-cursor', 'arrow',
+    '-defer', '10',
+    '-wait', '10',
+    '-pointer_mode', '1',
   ], {
     stdio: 'ignore',
     detached: true,
@@ -207,7 +191,7 @@ async function launchBrowser(profileId) {
     display,
     vncPort,
     wsPort,
-    browser,
+    chromeProc,
     xvfb,
     fluxbox,
     x11vnc,
@@ -224,16 +208,16 @@ async function launchBrowser(profileId) {
 
 async function closeBrowser(profileId) {
   const info = activeBrowsers.get(profileId);
-  if (!info) return;
+  if (info) {
+    // Kill all child processes: chrome, websockify, x11vnc, fluxbox, xvfb
+    for (const proc of [info.chromeProc, info.websockify, info.x11vnc, info.fluxbox, info.xvfb]) {
+      if (!proc) continue;
+      try { process.kill(-proc.pid, 'SIGKILL'); } catch (e) {}
+      try { proc.kill('SIGKILL'); } catch (e) {}
+    }
 
-  try { await info.browser.close(); } catch (e) {}
-
-  for (const proc of [info.websockify, info.x11vnc, info.fluxbox, info.xvfb]) {
-    try { process.kill(-proc.pid, 'SIGKILL'); } catch (e) {}
-    try { proc.kill('SIGKILL'); } catch (e) {}
+    activeBrowsers.delete(profileId);
   }
-
-  activeBrowsers.delete(profileId);
   database.setProfileStatus(profileId, 'idle');
 }
 

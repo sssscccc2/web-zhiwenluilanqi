@@ -16,6 +16,7 @@ export default function CreateProfile({ editProfile, onDone }) {
   const [fingerprint, setFingerprint] = useState(null);
   const [saving, setSaving] = useState(false);
   const [fpTab, setFpTab] = useState('basic');
+  const [selectedOS, setSelectedOS] = useState('windows');
 
   const [proxyRaw, setProxyRaw] = useState('');
   const [proxyParsed, setProxyParsed] = useState(false);
@@ -36,6 +37,7 @@ export default function CreateProfile({ editProfile, onDone }) {
         notes: editProfile.notes || '',
       });
       setFingerprint(editProfile.fingerprint);
+      setSelectedOS(editProfile.fingerprint?.os || 'windows');
       if (editProfile.proxy_host) {
         setProxyParsed(true);
       }
@@ -44,13 +46,18 @@ export default function CreateProfile({ editProfile, onDone }) {
     }
   }, [editProfile]);
 
-  const generateNewFP = async () => {
+  const generateNewFP = async (os) => {
     try {
-      const fp = await api.generateFingerprint();
+      const fp = await api.generateFingerprint({ os: os || selectedOS });
       setFingerprint(fp);
     } catch (err) {
       console.error('Generate FP failed:', err);
     }
+  };
+
+  const handleOSChange = (os) => {
+    setSelectedOS(os);
+    generateNewFP(os);
   };
 
   const handleChange = (field, value) => {
@@ -112,6 +119,12 @@ export default function CreateProfile({ editProfile, onDone }) {
     }
 
     if (host) {
+      // Auto-add sticky session for DataImpulse proxies to keep same IP
+      if (host.includes('dataimpulse') && user && !user.includes('_session-')) {
+        const sessionId = 'fp' + Math.random().toString(36).slice(2, 10);
+        user = user + `_session-${sessionId}_lifetime-30m`;
+      }
+
       setForm(prev => ({ ...prev, proxy_type: type, proxy_host: host, proxy_port: port, proxy_user: user, proxy_pass: pass }));
       setProxyParsed(true);
 
@@ -125,7 +138,7 @@ export default function CreateProfile({ editProfile, onDone }) {
   const resolveGeo = async (proxyInfo) => {
     setGeoLoading(true);
     try {
-      const { geo, fingerprint: fp } = await api.resolveProxy(proxyInfo);
+      const { geo, fingerprint: fp } = await api.resolveProxy({ ...proxyInfo, os: selectedOS });
       setGeoInfo(geo);
       setFingerprint(fp);
     } catch (err) {
@@ -186,6 +199,27 @@ export default function CreateProfile({ editProfile, onDone }) {
           </div>
         </div>
 
+        {/* OS Selector Section */}
+        <div className="form-section">
+          <h3>操作系统</h3>
+          <div className="os-selector">
+            {[
+              { key: 'windows', label: 'Windows', icon: '🪟' },
+              { key: 'macos', label: 'macOS', icon: '🍎' },
+              { key: 'linux', label: 'Linux', icon: '🐧' },
+            ].map(os => (
+              <button
+                key={os.key}
+                className={`os-btn ${selectedOS === os.key ? 'active' : ''}`}
+                onClick={() => handleOSChange(os.key)}
+              >
+                <span className="os-btn-icon">{os.icon}</span>
+                <span className="os-btn-label">{os.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Proxy Section */}
         <div className="form-section">
           <div className="section-header">
@@ -230,6 +264,18 @@ export default function CreateProfile({ editProfile, onDone }) {
                 </div>
               </div>
             )}
+
+            <div className="form-group full">
+              <div className="proxy-warning">
+                <strong>Reddit/社交媒体注册重要提示：</strong>
+                <ul style={{margin:'6px 0 0 16px',padding:0,fontSize:'12px',lineHeight:'1.6'}}>
+                  <li>必须使用<b>静态住宅代理(Static Residential)</b>，旋转代理每次IP变化会被立刻检测</li>
+                  <li>DataImpulse用户：使用<b>sticky session</b>（在用户名后加 <code>_session-xxx_lifetime-30m</code>）保持IP不变</li>
+                  <li>优先使用<b>美国/英国/加拿大</b>等英语国家IP，避免小众地区IP</li>
+                  <li>注册后<b>24小时内不要切换IP</b>，保持同一IP登录养号</li>
+                </ul>
+              </div>
+            </div>
 
             <div className="form-group">
               <label>代理类型</label>
@@ -284,11 +330,7 @@ export default function CreateProfile({ editProfile, onDone }) {
                     </div>
                     <div className="form-group">
                       <label>平台</label>
-                      <select value={fingerprint.platform} onChange={(e) => handleFpChange('platform', e.target.value)}>
-                        <option value="Win32">Win32</option>
-                        <option value="MacIntel">MacIntel</option>
-                        <option value="Linux x86_64">Linux x86_64</option>
-                      </select>
+                      <input type="text" value={fingerprint.platform} readOnly className="readonly" />
                     </div>
                     <div className="form-group">
                       <label>语言</label>
@@ -375,9 +417,10 @@ export default function CreateProfile({ editProfile, onDone }) {
                     <div className="form-group">
                       <label>WebRTC</label>
                       <select value={fingerprint.webrtc?.mode} onChange={(e) => handleFpChange('webrtc.mode', e.target.value)}>
-                        <option value="fake">阻止泄漏 (推荐)</option>
-                        <option value="real">真实</option>
-                        <option value="disabled">禁用</option>
+                        <option value="replace">替换</option>
+                        <option value="fake">隐私 (推荐)</option>
+                        <option value="real">允许</option>
+                        <option value="disabled">禁止</option>
                       </select>
                     </div>
                     <div className="form-group">
@@ -385,6 +428,20 @@ export default function CreateProfile({ editProfile, onDone }) {
                       <select value={fingerprint.doNotTrack || ''} onChange={(e) => handleFpChange('doNotTrack', e.target.value || null)}>
                         <option value="">未设置</option>
                         <option value="1">开启</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>AudioContext</label>
+                      <select value={fingerprint.audio?.noise ? 'noise' : 'off'} onChange={(e) => handleFpChange('audio.noise', e.target.value === 'noise' ? Math.random() * 0.0001 : 0)}>
+                        <option value="noise">随机</option>
+                        <option value="off">关闭</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>ClientRects</label>
+                      <select value={fingerprint.clientRects || 'noise'} onChange={(e) => handleFpChange('clientRects', e.target.value)}>
+                        <option value="noise">随机</option>
+                        <option value="off">关闭</option>
                       </select>
                     </div>
                     <div className="form-group">
@@ -397,6 +454,18 @@ export default function CreateProfile({ editProfile, onDone }) {
                     <div className="form-group full">
                       <label>Canvas 噪声种子</label>
                       <input type="text" value={fingerprint.canvas?.noise} readOnly className="readonly" />
+                    </div>
+                    <div className="form-group">
+                      <label>设备名称</label>
+                      <input type="text" value={fingerprint.deviceName || ''} onChange={(e) => handleFpChange('deviceName', e.target.value)} />
+                    </div>
+                    <div className="form-group">
+                      <label>Host IP (内网)</label>
+                      <input type="text" value={fingerprint.localIP || ''} onChange={(e) => handleFpChange('localIP', e.target.value)} />
+                    </div>
+                    <div className="form-group">
+                      <label>MAC 地址</label>
+                      <input type="text" value={fingerprint.macAddress || ''} onChange={(e) => handleFpChange('macAddress', e.target.value)} />
                     </div>
                   </div>
                 )}

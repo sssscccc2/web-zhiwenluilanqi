@@ -179,6 +179,60 @@
   white-space: nowrap;
 }
 
+.os-selector {
+  display: flex;
+  gap: 12px;
+}
+.os-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+.os-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.os-btn.active {
+  border-color: var(--accent);
+  background: rgba(108, 92, 231, 0.1);
+  color: var(--accent);
+  font-weight: 600;
+}
+.os-btn-icon {
+  font-size: 18px;
+}
+.os-btn-label {
+  font-size: 14px;
+}
+
+.proxy-warning {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: #856404;
+  line-height: 1.5;
+}
+.proxy-warning code {
+  background: rgba(0,0,0,0.08);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.proxy-warning b {
+  color: #d63031;
+}
+
 .form-actions {
   display: flex;
   justify-content: flex-end;

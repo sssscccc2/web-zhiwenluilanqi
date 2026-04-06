@@ -8,6 +8,12 @@ const { createProxyServer } = require('http-proxy');
 const profilesRouter = require('./routes/profiles');
 const browsersRouter = require('./routes/browsers');
 const browserService = require('./services/browser');
+const database = require('./services/database');
+
+// Reset all profiles to idle on startup (handles unclean server restarts)
+database.getAllProfiles().forEach(p => {
+  if (p.status === 'running') database.setProfileStatus(p.id, 'idle');
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,7 +41,7 @@ app.get('/vnc/:profileId', (req, res) => {
 <style>
 body{margin:0;overflow:hidden;background:#111}
 #screen{width:100vw;height:100vh}
-#log{position:fixed;top:0;left:0;right:0;padding:10px 16px;background:#222;color:#0f0;font:14px/1.5 monospace;z-index:99999;white-space:pre-wrap;max-height:40vh;overflow:auto}
+#log{position:fixed;top:0;left:0;right:0;padding:10px 16px;background:#222;color:#0f0;font:14px/1.5 monospace;z-index:99999;white-space:pre-wrap;max-height:40vh;overflow:auto;pointer-events:none}
 </style>
 </head><body>
 <div id="log">VNC 页面已加载</div>
@@ -110,13 +116,16 @@ try {
     addLog(e.label + ' → ' + e.url);
     document.getElementById('screen').innerHTML = '';
     var rfb = new RFB(document.getElementById('screen'), e.url);
-    rfb.scaleViewport = true; rfb.resizeSession = true;
+    rfb.scaleViewport = true;
+    rfb.resizeSession = false;
+    rfb.qualityLevel = 6;
+    rfb.compressionLevel = 2;
     var ok = false;
     var t = setTimeout(function(){ if(!ok){ addLog(e.label+' 超时','#ff0'); try{rfb.disconnect();}catch(x){} tryVNC(idx+1); } }, 8000);
     rfb.addEventListener('connect', function(){
       ok=true; clearTimeout(t);
       addLog('VNC 已连接! ('+e.label+')','#0f0');
-      setTimeout(function(){_log.style.display='none';},3000);
+      setTimeout(function(){_log.style.display='none';_log.style.pointerEvents='none';},2000);
       window._rfb = rfb;
       setupClipboard(rfb);
     });
