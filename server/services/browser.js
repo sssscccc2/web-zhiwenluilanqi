@@ -119,17 +119,26 @@ async function launchBrowser(profileId) {
   ];
 
   if (proxyServer) {
+    // === PROXY KILL SWITCH: all traffic MUST go through proxy, no fallback ===
     chromeArgs.push(`--proxy-server=${proxyServer}`);
+    // <-loopback> removes the implicit loopback bypass, so even 127.0.0.1 destinations go through proxy
     chromeArgs.push('--proxy-bypass-list=<-loopback>');
-    // DNS leak prevention: force all DNS through the SOCKS5 proxy
-    // Without this, Chrome resolves DNS locally, exposing the real server IP
+    // Force DNS through the SOCKS5 proxy — without this, Chrome resolves DNS locally
     chromeArgs.push('--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1');
-    // WebRTC leak prevention
+    // WebRTC: block non-proxied UDP to prevent real IP leak via STUN
     chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
     chromeArgs.push('--enforce-webrtc-ip-permission-check');
-    // Disable QUIC/HTTP3: SOCKS5 is TCP-only, QUIC uses UDP which bypasses proxy
-    // Browser falling back from HTTP3 to HTTP2 is a detectable proxy signal
+    // Disable QUIC/HTTP3: SOCKS5 is TCP-only, UDP QUIC bypasses proxy
     chromeArgs.push('--disable-quic');
+    // === Prevent Chrome background services from bypassing proxy ===
+    chromeArgs.push('--disable-background-networking');
+    chromeArgs.push('--disable-component-update');
+    chromeArgs.push('--disable-domain-reliability');
+    chromeArgs.push('--disable-client-side-phishing-detection');
+    chromeArgs.push('--disable-breakpad');
+    chromeArgs.push('--metrics-recording-only');
+    chromeArgs.push('--no-pings');
+    chromeArgs.push('--safebrowsing-disable-auto-update');
   }
 
   // Start page
