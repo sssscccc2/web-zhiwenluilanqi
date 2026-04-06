@@ -8,7 +8,8 @@ const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(UPLOAD_ROOT)) fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
 
 function safePath(dir) {
-  const resolved = path.resolve(UPLOAD_ROOT, dir || '');
+  let cleaned = (dir || '').replace(/^\/+/, '');
+  const resolved = path.resolve(UPLOAD_ROOT, cleaned);
   if (!resolved.startsWith(UPLOAD_ROOT)) return null;
   return resolved;
 }
