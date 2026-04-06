@@ -7,6 +7,7 @@ const { createProxyServer } = require('http-proxy');
 
 const profilesRouter = require('./routes/profiles');
 const browsersRouter = require('./routes/browsers');
+const filesRouter = require('./routes/files');
 const browserService = require('./services/browser');
 const database = require('./services/database');
 
@@ -23,6 +24,8 @@ app.use(express.json());
 
 app.use('/api/profiles', profilesRouter);
 app.use('/api/browsers', browsersRouter);
+app.use('/api/files', filesRouter);
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Load noVNC bundle into memory at startup for inline embedding
 const noVNCBundle = fs.readFileSync(path.join(__dirname, 'public', 'novnc-bundle.js'), 'utf8');

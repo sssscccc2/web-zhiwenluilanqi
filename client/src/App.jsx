@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import ProfileList from './components/ProfileList';
 import BrowserView from './components/BrowserView';
 import CreateProfile from './components/CreateProfile';
+import FileManager from './components/FileManager';
 import './App.css';
 
 export default function App() {
@@ -23,6 +24,12 @@ export default function App() {
               onClick={() => { setView('profiles'); setActiveBrowser(null); }}
             >
               浏览器管理
+            </button>
+            <button
+              className={`nav-tab ${view === 'files' ? 'active' : ''}`}
+              onClick={() => setView('files')}
+            >
+              文件管理
             </button>
             {activeBrowser && (
               <button
@@ -55,6 +62,7 @@ export default function App() {
             onClose={() => { setActiveBrowser(null); setView('profiles'); }}
           />
         )}
+        {view === 'files' && <FileManager />}
         {view === 'create' && (
           <CreateProfile
             editProfile={editingProfile}
