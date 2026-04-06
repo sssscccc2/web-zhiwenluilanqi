@@ -118,12 +118,18 @@ async function launchBrowser(profileId) {
     `--fingerprint-locale=${fp.languages?.[0] || 'en-US'}`,
   ];
 
-  // Proxy - clean setup, no host-resolver-rules hack
   if (proxyServer) {
     chromeArgs.push(`--proxy-server=${proxyServer}`);
     chromeArgs.push('--proxy-bypass-list=<-loopback>');
+    // DNS leak prevention: force all DNS through the SOCKS5 proxy
+    // Without this, Chrome resolves DNS locally, exposing the real server IP
+    chromeArgs.push('--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1');
+    // WebRTC leak prevention
     chromeArgs.push('--webrtc-ip-handling-policy=disable_non_proxied_udp');
     chromeArgs.push('--enforce-webrtc-ip-permission-check');
+    // Disable QUIC/HTTP3: SOCKS5 is TCP-only, QUIC uses UDP which bypasses proxy
+    // Browser falling back from HTTP3 to HTTP2 is a detectable proxy signal
+    chromeArgs.push('--disable-quic');
   }
 
   // Start page
