@@ -473,6 +473,18 @@ async function launchBrowser(profileId) {
     try { execSync(`DISPLAY=${display} xdotool key --clearmodifiers super+Up`, { timeout: 2000 }); } catch (e2) {}
   }
 
+  // Clean up orphaned SHM segments to prevent "No space left on device"
+  try {
+    const shmOut = execSync("ipcs -m | awk '$6 == 0 {print $2}'", { timeout: 5000 }).toString().trim();
+    if (shmOut) {
+      const ids = shmOut.split('\n').filter(Boolean);
+      if (ids.length > 100) {
+        console.log(`[Browser] Cleaning ${ids.length} orphaned SHM segments...`);
+        execSync("ipcs -m | awk '$6 == 0 {print $2}' | xargs -r -n1 ipcrm -m 2>/dev/null || true", { timeout: 30000 });
+      }
+    }
+  } catch (e) { /* ignore */ }
+
   // Start x11vnc
   const x11vnc = spawn('x11vnc', [
     '-display', display,
@@ -487,11 +499,18 @@ async function launchBrowser(profileId) {
     '-wait', '10',
     '-pointer_mode', '1',
   ], {
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
     detached: true,
   });
+  x11vnc.stderr.on('data', (d) => {
+    const msg = d.toString();
+    if (msg.includes('shmget') || msg.includes('No space left')) {
+      console.error(`[x11vnc] SHM error detected, attempting cleanup...`);
+      try { execSync("ipcs -m | awk '$6 == 0 {print $2}' | xargs -r -n1 ipcrm -m 2>/dev/null || true", { timeout: 10000 }); } catch (e) {}
+    }
+  });
   x11vnc.unref();
-  await sleep(500);
+  await sleep(1000);
 
   // Start websockify
   const websockify = spawn('/usr/local/bin/websockify', [
