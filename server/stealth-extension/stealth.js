@@ -2,7 +2,6 @@
   'use strict';
 
   // === toString() protection: make overridden functions look native ===
-  const nativeToString = Function.prototype.toString;
   const nativeFnMap = new WeakMap();
 
   function maskAsNative(fn, nativeName) {
@@ -20,14 +19,14 @@
   // === Fix incognito/private browsing detection ===
   if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
     const origEstimate = navigator.storage.estimate.bind(navigator.storage);
-    const fakeEstimate = maskAsNative(async function estimate() {
+    const fakeEstimate = async function estimate() {
       const real = await origEstimate();
       return {
         quota: Math.max(real.quota || 0, 2147483648 + Math.floor(Math.random() * 1073741824)),
         usage: real.usage || Math.floor(Math.random() * 50000),
         usageDetails: real.usageDetails || {},
       };
-    }, 'estimate');
+    };
     Object.defineProperty(navigator.storage, 'estimate', {
       value: fakeEstimate,
       writable: true,
@@ -36,11 +35,11 @@
   }
 
   if (typeof window !== 'undefined' && !window.webkitRequestFileSystem) {
-    window.webkitRequestFileSystem = maskAsNative(function webkitRequestFileSystem(type, size, successCallback, errorCallback) {
+    window.webkitRequestFileSystem = function webkitRequestFileSystem(type, size, successCallback, errorCallback) {
       if (successCallback) {
         setTimeout(() => successCallback({ name: '', root: null }), 0);
       }
-    }, 'webkitRequestFileSystem');
+    };
     window.TEMPORARY = 0;
     window.PERSISTENT = 1;
   }
@@ -71,9 +70,9 @@
       onchange: null,
     };
     const connProto = {
-      addEventListener: { value: maskAsNative(function addEventListener() {}, 'addEventListener') },
-      removeEventListener: { value: maskAsNative(function removeEventListener() {}, 'removeEventListener') },
-      dispatchEvent: { value: maskAsNative(function dispatchEvent() { return true; }, 'dispatchEvent') },
+      addEventListener: { value: function addEventListener() {} },
+      removeEventListener: { value: function removeEventListener() {} },
+      dispatchEvent: { value: function dispatchEvent() { return true; } },
     };
     for (const [key, val] of Object.entries(connectionData)) {
       connProto[key] = { value: val, writable: false, enumerable: true, configurable: true };
@@ -102,15 +101,15 @@
     for (const [key, val] of Object.entries(batteryData)) {
       batteryProto[key] = { value: val, writable: false, enumerable: true };
     }
-    batteryProto.addEventListener = { value: maskAsNative(function addEventListener() {}, 'addEventListener') };
-    batteryProto.removeEventListener = { value: maskAsNative(function removeEventListener() {}, 'removeEventListener') };
-    batteryProto.dispatchEvent = { value: maskAsNative(function dispatchEvent() { return true; }, 'dispatchEvent') };
+    batteryProto.addEventListener = { value: function addEventListener() {} };
+    batteryProto.removeEventListener = { value: function removeEventListener() {} };
+    batteryProto.dispatchEvent = { value: function dispatchEvent() { return true; } };
     const batteryManager = Object.create(EventTarget.prototype, batteryProto);
 
     Object.defineProperty(navigator, 'getBattery', {
-      value: maskAsNative(function getBattery() {
+      value: function getBattery() {
         return Promise.resolve(batteryManager);
-      }, 'getBattery'),
+      },
       writable: true,
       enumerable: true,
       configurable: true,
@@ -125,23 +124,23 @@
         isInstalled: false,
         InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
         RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-        getDetails: maskAsNative(function getDetails() { return null; }, 'getDetails'),
-        getIsInstalled: maskAsNative(function getIsInstalled() { return false; }, 'getIsInstalled'),
-        installState: maskAsNative(function installState(cb) { if (cb) cb('not_installed'); }, 'installState'),
+        getDetails: function getDetails() { return null; },
+        getIsInstalled: function getIsInstalled() { return false; },
+        installState: function installState(cb) { if (cb) cb('not_installed'); },
       };
     }
     if (!window.chrome.csi) {
-      window.chrome.csi = maskAsNative(function csi() {
+      window.chrome.csi = function csi() {
         return {
           startE: Date.now() - Math.floor(Math.random() * 1000),
           onloadT: Date.now() - Math.floor(Math.random() * 500),
           pageT: Math.random() * 2000 + 500,
           tran: 15,
         };
-      }, 'csi');
+      };
     }
     if (!window.chrome.loadTimes) {
-      window.chrome.loadTimes = maskAsNative(function loadTimes() {
+      window.chrome.loadTimes = function loadTimes() {
         const now = Date.now() / 1000;
         return {
           commitLoadTime: now - Math.random(),
@@ -158,7 +157,7 @@
           wasFetchedViaSpdy: true,
           wasNpnNegotiated: true,
         };
-      }, 'loadTimes');
+      };
     }
   }
 
@@ -188,7 +187,7 @@
     try { Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true }); } catch (e) {}
   }
 
-  // === Intl API locale fix (safe wrapper that preserves native behavior) ===
+  // === Intl API locale fix ===
   if (typeof navigator !== 'undefined' && typeof Intl !== 'undefined') {
     const profileLang = navigator.language || 'en-US';
 
