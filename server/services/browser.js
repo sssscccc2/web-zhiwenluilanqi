@@ -280,17 +280,17 @@ async function launchBrowser(profileId) {
         pass: profile.proxy_pass || '',
       };
 
-      // Step 2: Auto-detect exit IP country for local DNS
+      // Step 2: Auto-detect exit IP country + ISP for local DNS
       let localDnsOpts = null;
       try {
-        console.log('[Browser] Detecting proxy exit IP country for local DNS...');
+        console.log('[Browser] Detecting proxy exit IP for local DNS...');
         const geoInfo = await dnsResolver.detectCountry(socksProxy);
         if (geoInfo && geoInfo.country) {
-          const dnsServers = dnsResolver.getDnsForCountry(geoInfo.country);
+          const dnsMatch = dnsResolver.getDnsForExit(geoInfo.country, geoInfo.isp);
           console.log(`[Browser] Exit IP: ${geoInfo.ip} (${geoInfo.country}/${geoInfo.city}) ISP: ${geoInfo.isp}`);
-          console.log(`[Browser] Local DNS: ${dnsServers.join(', ')} (${geoInfo.country})`);
+          console.log(`[Browser] DNS match: ${dnsMatch.matchType} (${dnsMatch.matchedKeyword}) → ${dnsMatch.servers.join(', ')}`);
           localDnsOpts = {
-            servers: dnsServers,
+            servers: dnsMatch.servers,
             socksProxy,
           };
         } else {
