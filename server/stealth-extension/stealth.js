@@ -1,6 +1,51 @@
 (() => {
   'use strict';
 
+  // === CRITICAL: Fix incognito/private browsing detection ===
+  // Pixelscan and other sites detect incognito by checking storage quota
+  // Incognito Chrome reports ~120MB, normal Chrome reports several GB
+  if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
+    const origEstimate = navigator.storage.estimate.bind(navigator.storage);
+    Object.defineProperty(navigator.storage, 'estimate', {
+      value: async function estimate() {
+        const real = await origEstimate();
+        return {
+          quota: Math.max(real.quota || 0, 2147483648 + Math.floor(Math.random() * 1073741824)),
+          usage: real.usage || Math.floor(Math.random() * 50000),
+          usageDetails: real.usageDetails || {},
+        };
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  // === Fix webkitRequestFileSystem (older incognito detection) ===
+  if (typeof window !== 'undefined' && !window.webkitRequestFileSystem) {
+    window.webkitRequestFileSystem = function(type, size, successCallback, errorCallback) {
+      if (successCallback) {
+        setTimeout(() => successCallback({ name: '', root: null }), 0);
+      }
+    };
+    window.TEMPORARY = 0;
+    window.PERSISTENT = 1;
+  }
+
+  // === Fix performance.memory (Chrome-specific, incognito detection) ===
+  if (typeof performance !== 'undefined') {
+    try {
+      const memoryData = {
+        jsHeapSizeLimit: 4294705152,
+        totalJSHeapSize: 35000000 + Math.floor(Math.random() * 15000000),
+        usedJSHeapSize: 25000000 + Math.floor(Math.random() * 10000000),
+      };
+      Object.defineProperty(performance, 'memory', {
+        get: () => memoryData,
+        configurable: true,
+      });
+    } catch (e) {}
+  }
+
   // === NetworkInformation API (navigator.connection) ===
   // Real Chrome on WiFi reports these typical values
   const connectionData = {
@@ -188,7 +233,6 @@
   }
 
   // === Prevent Brave/Firefox detection tricks ===
-  // Some sites check for these as signs of non-standard browsers
   if (typeof navigator !== 'undefined') {
     try {
       if (navigator.brave) {
@@ -196,6 +240,9 @@
       }
     } catch (e) {}
   }
+
+  // navigator.webdriver is already handled by --disable-blink-features=AutomationControlled
+  // DO NOT override it here — JS-level overrides are detectable and counterproductive
 
   // === visibilityState and document.hasFocus ===
   if (typeof document !== 'undefined') {
@@ -251,5 +298,37 @@
         configurable: true,
       });
     } catch (e) {}
+  }
+
+  // === Fix Intl API locale to match navigator.language ===
+  // Xvfb/container env may report en-US, but we need it to match the profile language
+  if (typeof navigator !== 'undefined' && typeof Intl !== 'undefined') {
+    const profileLang = navigator.language || 'en-US';
+    const origDTF = Intl.DateTimeFormat;
+    Intl.DateTimeFormat = function(...args) {
+      if (!args[0]) args[0] = profileLang;
+      return new origDTF(...args);
+    };
+    Intl.DateTimeFormat.prototype = origDTF.prototype;
+    Intl.DateTimeFormat.supportedLocalesOf = origDTF.supportedLocalesOf.bind(origDTF);
+    Object.defineProperty(Intl.DateTimeFormat, 'name', { value: 'DateTimeFormat' });
+
+    const origNF = Intl.NumberFormat;
+    Intl.NumberFormat = function(...args) {
+      if (!args[0]) args[0] = profileLang;
+      return new origNF(...args);
+    };
+    Intl.NumberFormat.prototype = origNF.prototype;
+    Intl.NumberFormat.supportedLocalesOf = origNF.supportedLocalesOf.bind(origNF);
+    Object.defineProperty(Intl.NumberFormat, 'name', { value: 'NumberFormat' });
+
+    const origColl = Intl.Collator;
+    Intl.Collator = function(...args) {
+      if (!args[0]) args[0] = profileLang;
+      return new origColl(...args);
+    };
+    Intl.Collator.prototype = origColl.prototype;
+    Intl.Collator.supportedLocalesOf = origColl.supportedLocalesOf.bind(origColl);
+    Object.defineProperty(Intl.Collator, 'name', { value: 'Collator' });
   }
 })();

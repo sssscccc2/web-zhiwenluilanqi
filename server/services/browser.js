@@ -1,12 +1,31 @@
+// Priority: fingerprint-chromium (2.3k stars, more mature) > CloakBrowser > system Chrome
+const FINGERPRINT_CHROMIUM_PATH = '/opt/fingerprint-chromium/ungoogled-chromium-144.0.7559.132-1-x86_64_linux/chrome';
+
 let cloakBinaryPath = null;
-const cloakReady = import('cloakbrowser')
-  .then(async (m) => {
+let browserEngine = 'system';
+
+const cloakReady = (async () => {
+  // Check fingerprint-chromium first (preferred)
+  const fs2 = require('fs');
+  if (fs2.existsSync(FINGERPRINT_CHROMIUM_PATH)) {
+    cloakBinaryPath = FINGERPRINT_CHROMIUM_PATH;
+    browserEngine = 'fingerprint-chromium-144';
+    console.log(`[Browser] fingerprint-chromium v144 binary: ${cloakBinaryPath}`);
+    return;
+  }
+
+  // Fallback to CloakBrowser
+  try {
+    const m = await import('cloakbrowser');
     await m.ensureBinary();
     const info = m.binaryInfo();
     cloakBinaryPath = info.binaryPath;
+    browserEngine = 'cloakbrowser';
     console.log(`[Browser] CloakBrowser v${info.version} binary: ${cloakBinaryPath}`);
-  })
-  .catch((e) => { console.log('[Browser] CloakBrowser not available:', e.message); });
+  } catch (e) {
+    console.log('[Browser] No stealth browser available:', e.message);
+  }
+})();
 
 const { chromium } = require('playwright');
 const { execSync, spawn } = require('child_process');
@@ -304,21 +323,32 @@ async function launchBrowser(profileId) {
   const langPrimary = fp.languages?.[0] || 'en-US';
   const langAccept = fp.languages ? fp.languages.join(',') : 'en-US,en;q=0.9';
 
+  const brandVersion = browserEngine === 'fingerprint-chromium-144' ? '144.0.0.0' : '145.0.0.0';
+  console.log(`[Browser] Engine: ${browserEngine} | Seed: ${fpSeed} | OS: ${osPlatform}`);
+
   const chromeArgs = [
     '--test-type',
     '--disable-blink-features=AutomationControlled',
     `--fingerprint=${fpSeed}`,
     `--fingerprint-platform=${osPlatform}`,
     `--fingerprint-platform-version=${platformVersionMap[osPlatform] || '10.0.19045.3803'}`,
-    // Report as "Chrome" not "Chromium" — fixes title bar and userAgentData
     '--fingerprint-brand=Chrome',
-    '--fingerprint-brand-version=145.0.0.0',
-    `--fingerprint-gpu-vendor=${gpu.vendor}`,
-    `--fingerprint-gpu-renderer=${gpu.renderer}`,
+    `--fingerprint-brand-version=${brandVersion}`,
     `--fingerprint-hardware-concurrency=${fp.hardwareConcurrency || 8}`,
     '--ignore-gpu-blocklist',
+  ];
 
-    // Fix incognito detection: report consistent storage quota across modes
+  // fingerprint-chromium v144 removed individual GPU flags; uses seed-derived GPU
+  if (browserEngine !== 'fingerprint-chromium-144') {
+    chromeArgs.push(`--fingerprint-gpu-vendor=${gpu.vendor}`);
+    chromeArgs.push(`--fingerprint-gpu-renderer=${gpu.renderer}`);
+  } else {
+    // fingerprint-chromium needs --no-sandbox (no chrome-sandbox binary shipped)
+    // --test-type suppresses the warning bar
+    chromeArgs.push('--no-sandbox');
+  }
+
+  chromeArgs.push(
     '--enable-features=PredictableReportedQuota',
 
     '--no-first-run',
@@ -331,17 +361,25 @@ async function launchBrowser(profileId) {
     `--lang=${langPrimary}`,
     `--accept-lang=${langAccept}`,
     `--user-data-dir=${userDataDir}`,
-    `--fingerprint-timezone=${fp.timezone || 'America/New_York'}`,
-    `--fingerprint-locale=${langPrimary}`,
+  );
+
+  // fingerprint-chromium uses --timezone; CloakBrowser uses --fingerprint-timezone
+  if (browserEngine === 'fingerprint-chromium-144') {
+    chromeArgs.push(`--timezone=${fp.timezone || 'America/New_York'}`);
+  } else {
+    chromeArgs.push(`--fingerprint-timezone=${fp.timezone || 'America/New_York'}`);
+    chromeArgs.push(`--fingerprint-locale=${langPrimary}`);
+  }
+
+  chromeArgs.push(
 
     '--disable-hang-monitor',
     '--disable-prompt-on-repost',
     '--disable-ipc-flooding-protection',
 
-    // Load stealth extension for navigator.connection, battery, mediaDevices, permissions
     `--load-extension=${path.join(__dirname, '..', 'stealth-extension')}`,
     '--disable-extensions-except=' + path.join(__dirname, '..', 'stealth-extension'),
-  ];
+  );
 
   if (proxyServer) {
     // === PROXY KILL SWITCH ===
@@ -374,18 +412,28 @@ async function launchBrowser(profileId) {
 
   // Run as non-root 'chrome-user' so Chrome can use real sandbox (no --no-sandbox needed)
   // This eliminates the warning bar and makes the environment more realistic
-  const chromeProc = spawn('su', ['-s', '/bin/bash', 'chrome-user', '-c',
-    `"${cloakBinary}" ${chromeArgs.map(a => `'${a}'`).join(' ')}`
-  ], {
+  const cmdLine = `"${cloakBinary}" ${chromeArgs.map(a => `'${a}'`).join(' ')}`;
+  console.log(`[Browser] Full command: ${cmdLine.substring(0, 500)}`);
+
+  const chromeProc = spawn('su', ['-s', '/bin/bash', 'chrome-user', '-c', cmdLine], {
     env: {
       ...process.env,
       DISPLAY: display,
       TZ: fp.timezone || 'America/New_York',
       HOME: '/home/chrome-user',
       FONTCONFIG_PATH: '/etc/fonts',
+      LANG: `${langPrimary.replace('-', '_')}.utf8`,
+      LC_ALL: `${langPrimary.replace('-', '_')}.utf8`,
+      LANGUAGE: langPrimary.replace('-', '_'),
     },
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
     detached: true,
+  });
+  chromeProc.stderr?.on('data', (d) => {
+    const msg = d.toString().trim();
+    if (msg && !msg.includes('dbus') && !msg.includes('Xlib')) {
+      console.log(`[Browser:stderr] ${msg.substring(0, 200)}`);
+    }
   });
   chromeProc.unref();
 
@@ -469,6 +517,7 @@ async function launchBrowser(profileId) {
     x11vnc,
     websockify,
     relayInfo,
+    userDataDir,
     startedAt: new Date().toISOString(),
   };
 
@@ -481,10 +530,45 @@ async function launchBrowser(profileId) {
 async function closeBrowser(profileId) {
   const info = activeBrowsers.get(profileId);
   if (info) {
+    // Fix Chrome preferences before killing to prevent "Restore pages?" dialog
+    if (info.userDataDir) {
+      try {
+        const prefsPath = path.join(info.userDataDir, 'Default', 'Preferences');
+        if (fs.existsSync(prefsPath)) {
+          const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+          if (!prefs.profile) prefs.profile = {};
+          prefs.profile.exit_type = 'Normal';
+          prefs.profile.exited_cleanly = true;
+          fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2));
+        }
+      } catch (e) {}
+    }
+
+    // Try graceful SIGTERM first, then SIGKILL after 2s
+    for (const proc of [info.chromeProc]) {
+      if (!proc) continue;
+      try { process.kill(-proc.pid, 'SIGTERM'); } catch (e) {}
+    }
+    await sleep(2000);
+
     for (const proc of [info.chromeProc, info.websockify, info.x11vnc, info.fluxbox, info.xvfb]) {
       if (!proc) continue;
       try { process.kill(-proc.pid, 'SIGKILL'); } catch (e) {}
       try { proc.kill('SIGKILL'); } catch (e) {}
+    }
+
+    // Fix preferences again after killing (in case SIGTERM updated them)
+    if (info.userDataDir) {
+      try {
+        const prefsPath = path.join(info.userDataDir, 'Default', 'Preferences');
+        if (fs.existsSync(prefsPath)) {
+          const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+          if (!prefs.profile) prefs.profile = {};
+          prefs.profile.exit_type = 'Normal';
+          prefs.profile.exited_cleanly = true;
+          fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2));
+        }
+      } catch (e) {}
     }
 
     activeBrowsers.delete(profileId);
