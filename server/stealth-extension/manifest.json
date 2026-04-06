@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome Enhanced Security",
+  "version": "1.0.0",
+  "description": "Enhanced security and privacy features",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["stealth.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    }
+  ],
+  "permissions": []
+}

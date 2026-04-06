@@ -213,8 +213,11 @@ async function launchBrowser(profileId) {
   const vncPort = VNC_PORT_BASE + displayNum;
   const wsPort = WEBSOCKIFY_PORT_BASE + displayNum;
 
-  const screenW = fp.screen?.width || 1280;
-  const screenH = fp.screen?.height || 720;
+  // Use 1920x1080 as the standard virtual display size — CloakBrowser's fingerprint seed
+  // derives screen.width/height independently, and we need the Xvfb to be at least as large
+  // to avoid outerWidth vs screen.width mismatches that trigger headless detection
+  const screenW = Math.max(fp.screen?.width || 1920, 1920);
+  const screenH = Math.max(fp.screen?.height || 1080, 1080);
 
   const userDataDir = path.join(USER_DATA_BASE, profileId);
   if (!fs.existsSync(userDataDir)) {
@@ -225,7 +228,7 @@ async function launchBrowser(profileId) {
   setupBookmarks(userDataDir);
 
   // Start Xvfb: -ac allows all clients (chrome-user needs access)
-  const xvfb = spawn('Xvfb', [display, '-screen', '0', `${screenW}x${screenH}x24`, '-ac', '-nolisten', 'tcp'], {
+  const xvfb = spawn('Xvfb', [display, '-screen', '0', `${screenW}x${screenH}x24`, '-ac', '-nolisten', 'tcp', '-dpi', '96'], {
     stdio: 'ignore',
     detached: true,
   });
@@ -265,37 +268,79 @@ async function launchBrowser(profileId) {
 
   // === STANDALONE MODE: CloakBrowser as independent process ===
   const cloakBinary = cloakBinaryPath || '/usr/bin/google-chrome-stable';
-  const fpSeed = Math.floor(Math.random() * 99999);
 
-  // Determine OS platform from fingerprint (dynamic, not hardcoded)
+  // Persistent fingerprint seed per profile — ensures Canvas/WebGL/Audio hashes
+  // stay consistent across sessions (prevents fingerprint rotation detection)
+  const seedFile = path.join(userDataDir, '.fp_seed');
+  let fpSeed;
+  if (fs.existsSync(seedFile)) {
+    fpSeed = parseInt(fs.readFileSync(seedFile, 'utf8').trim(), 10) || 12345;
+  } else {
+    fpSeed = Math.floor(Math.random() * 99999);
+    fs.writeFileSync(seedFile, String(fpSeed));
+  }
+
   const osPlatform = fp.os || 'windows';
   const gpuList = GPU_PROFILES[osPlatform] || GPU_PROFILES.windows;
-  const gpu = fp.webgl?.vendor ? fp.webgl : gpuList[Math.floor(Math.random() * gpuList.length)];
+  // Also persist GPU selection so it doesn't change between launches
+  const gpuFile = path.join(userDataDir, '.gpu_index');
+  let gpu;
+  if (fp.webgl?.vendor) {
+    gpu = fp.webgl;
+  } else if (fs.existsSync(gpuFile)) {
+    const idx = parseInt(fs.readFileSync(gpuFile, 'utf8').trim(), 10) || 0;
+    gpu = gpuList[idx % gpuList.length];
+  } else {
+    const idx = Math.floor(Math.random() * gpuList.length);
+    fs.writeFileSync(gpuFile, String(idx));
+    gpu = gpuList[idx];
+  }
+
+  const platformVersionMap = {
+    windows: '10.0.19045.3803',
+    macos: '14.4.0',
+    linux: '6.5.0',
+  };
+  const langPrimary = fp.languages?.[0] || 'en-US';
+  const langAccept = fp.languages ? fp.languages.join(',') : 'en-US,en;q=0.9';
 
   const chromeArgs = [
-    // --test-type suppresses ALL "unsupported command-line flag" warning bars
     '--test-type',
     '--disable-blink-features=AutomationControlled',
     `--fingerprint=${fpSeed}`,
     `--fingerprint-platform=${osPlatform}`,
+    `--fingerprint-platform-version=${platformVersionMap[osPlatform] || '10.0.19045.3803'}`,
+    // Report as "Chrome" not "Chromium" — fixes title bar and userAgentData
+    '--fingerprint-brand=Chrome',
+    '--fingerprint-brand-version=145.0.0.0',
     `--fingerprint-gpu-vendor=${gpu.vendor}`,
     `--fingerprint-gpu-renderer=${gpu.renderer}`,
+    `--fingerprint-hardware-concurrency=${fp.hardwareConcurrency || 8}`,
     '--ignore-gpu-blocklist',
+
+    // Fix incognito detection: report consistent storage quota across modes
+    '--enable-features=PredictableReportedQuota',
 
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-translate',
-    '--disable-features=TranslateUI',
+    '--disable-features=TranslateUI,DnsOverHttps',
+    '--dns-over-https-mode=off',
     `--window-size=${screenW},${screenH}`,
     '--start-maximized',
-    `--lang=${fp.languages?.[0] || 'en-US'}`,
+    `--lang=${langPrimary}`,
+    `--accept-lang=${langAccept}`,
     `--user-data-dir=${userDataDir}`,
     `--fingerprint-timezone=${fp.timezone || 'America/New_York'}`,
-    `--fingerprint-locale=${fp.languages?.[0] || 'en-US'}`,
+    `--fingerprint-locale=${langPrimary}`,
 
     '--disable-hang-monitor',
     '--disable-prompt-on-repost',
     '--disable-ipc-flooding-protection',
+
+    // Load stealth extension for navigator.connection, battery, mediaDevices, permissions
+    `--load-extension=${path.join(__dirname, '..', 'stealth-extension')}`,
+    '--disable-extensions-except=' + path.join(__dirname, '..', 'stealth-extension'),
   ];
 
   if (proxyServer) {
@@ -345,6 +390,29 @@ async function launchBrowser(profileId) {
   chromeProc.unref();
 
   await sleep(3000);
+
+  // Profile warmup: visit popular sites to build cookies/history on first launch
+  const warmupMarker = path.join(userDataDir, '.warmed_up');
+  if (!fs.existsSync(warmupMarker)) {
+    console.log('[Browser] First launch — warming up profile with popular sites...');
+    const warmupUrls = [
+      'https://www.google.com/search?q=weather',
+      'https://www.youtube.com/',
+      'https://en.wikipedia.org/wiki/Main_Page',
+    ];
+    for (const url of warmupUrls) {
+      try {
+        execSync(`DISPLAY=${display} xdotool key --clearmodifiers ctrl+l`, { timeout: 2000 });
+        await sleep(300);
+        execSync(`DISPLAY=${display} xdotool type --clearmodifiers --delay 30 '${url}'`, { timeout: 5000 });
+        await sleep(200);
+        execSync(`DISPLAY=${display} xdotool key --clearmodifiers Return`, { timeout: 2000 });
+        await sleep(4000);
+      } catch (e) {}
+    }
+    try { fs.writeFileSync(warmupMarker, new Date().toISOString()); } catch (e) {}
+    console.log('[Browser] Warmup complete');
+  }
 
   // Maximize browser window
   try {
