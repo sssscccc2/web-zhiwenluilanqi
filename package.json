@@ -13,7 +13,7 @@
   "description": "",
   "dependencies": {
     "better-sqlite3": "^12.8.0",
-    "cloakbrowser": "^0.3.19",
+    "cloakbrowser": "^0.3.20",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "http-proxy": "^1.18.1",
