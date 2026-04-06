@@ -33,6 +33,7 @@ const path = require('path');
 const fs = require('fs');
 const database = require('./database');
 const { getRelay } = require('./proxy-relay');
+const dnsResolver = require('./dns-resolver');
 
 const activeBrowsers = new Map();
 
@@ -266,20 +267,50 @@ async function launchBrowser(profileId) {
   fluxbox.unref();
   await sleep(300);
 
-  // Build proxy config
+  // Build proxy config with auto-detected local DNS
   let proxyServer = null;
   let relayInfo = null;
   if (profile.proxy_type && profile.proxy_host) {
     if (profile.proxy_user) {
+      // Step 1: Create a basic relay first to detect exit IP country
+      const socksProxy = {
+        host: profile.proxy_host,
+        port: parseInt(profile.proxy_port),
+        user: profile.proxy_user,
+        pass: profile.proxy_pass || '',
+      };
+
+      // Step 2: Auto-detect exit IP country for local DNS
+      let localDnsOpts = null;
+      try {
+        console.log('[Browser] Detecting proxy exit IP country for local DNS...');
+        const geoInfo = await dnsResolver.detectCountry(socksProxy);
+        if (geoInfo && geoInfo.country) {
+          const dnsServers = dnsResolver.getDnsForCountry(geoInfo.country);
+          console.log(`[Browser] Exit IP: ${geoInfo.ip} (${geoInfo.country}/${geoInfo.city}) ISP: ${geoInfo.isp}`);
+          console.log(`[Browser] Local DNS: ${dnsServers.join(', ')} (${geoInfo.country})`);
+          localDnsOpts = {
+            servers: dnsServers,
+            socksProxy,
+          };
+        } else {
+          console.log('[Browser] Could not detect country, using default DNS');
+        }
+      } catch (e) {
+        console.log('[Browser] Country detection failed:', e.message);
+      }
+
+      // Step 3: Create relay with local DNS resolution
       relayInfo = getRelay(
         profile.proxy_type,
         profile.proxy_host,
         profile.proxy_port,
         profile.proxy_user,
-        profile.proxy_pass
+        profile.proxy_pass,
+        { localDns: localDnsOpts }
       );
       proxyServer = `socks5://127.0.0.1:${relayInfo.localPort}`;
-      console.log(`[Browser] Proxy relay: ${profile.proxy_type}://${profile.proxy_host}:${profile.proxy_port} → local :${relayInfo.localPort}`);
+      console.log(`[Browser] Proxy relay: ${profile.proxy_type}://${profile.proxy_host}:${profile.proxy_port} → local :${relayInfo.localPort}${localDnsOpts ? ' (with local DNS)' : ''}`);
     } else {
       proxyServer = `${profile.proxy_type}://${profile.proxy_host}:${profile.proxy_port}`;
     }
